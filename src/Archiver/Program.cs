@@ -11,16 +11,18 @@ namespace Archiver
 {
     class Program
     {
-        private const string _metaDataFolder = ".archiverMetaData\\";
-        private const string _indexFileName = "\\index.html";
+        private const string _metaDataFolder = ".archiverMetaData";
 
         // CONFIGURATION ITEMS
         private static string _basePath;
         private static string[] _importantArchiveFolders;
         private static string _destinationPath;
         private static string _sourceCodePath;
+        private static string _browserHtmlPath;
         private static long _importantArchiveDiscMB;
         private static long _regularArchiveDiscMB;
+        private static bool _copyOnly;
+        private static bool _test;
 
         static void Main(string[] args)
         {
@@ -60,6 +62,10 @@ namespace Archiver
                     ["--source"] = "sourceCodePath",
                     ["--sourceCode"] = "sourceCodePath",
                     ["--sourceCodePath"] = "sourceCodePath",
+                    ["-h"] = "browserHtmlPath",
+                    ["--html"] = "browserHtmlPath",
+                    ["--browserHtml"] = "browserHtmlPath",
+                    ["--browserHtmlPath"] = "browserHtmlPath",
                     ["-imb"] = "importantArchiveDiscMB",
                     ["--importantMB"] = "importantArchiveDiscMB",
                     ["--importantDiscMB"] = "importantArchiveDiscMB",
@@ -67,16 +73,24 @@ namespace Archiver
                     ["-rmb"] = "regularArchiveDiscMB",
                     ["--regularMB"] = "regularArchiveDiscMB",
                     ["--regularDiscMB"] = "regularArchiveDiscMB",
-                    ["--regularArchiveDiscMB"] = "regularArchiveDiscMB"
+                    ["--regularArchiveDiscMB"] = "regularArchiveDiscMB",
+                    ["-t"] = "test",
+                    ["--test"] = "test",
+                    ["-c"] = "copyOnly",
+                    ["--copy"] = "copyOnly",
+                    ["--copyOnly"] = "copyOnly"
                 });
 
             var config = builder.Build();
 
-            _basePath = Path.GetFullPath(config.GetSection("basePath").Value ?? throw new ArgumentNullException("You must provide a basePath"));
-            _destinationPath = Path.GetFullPath(config.GetSection("destinationPath").Value ?? throw new ArgumentNullException("You must provide a destinationPath"));
-            _sourceCodePath = Path.GetFullPath(config.GetSection("sourceCodePath").Value ?? throw new ArgumentNullException("You must provide a sourceCodePath"));
-            _importantArchiveDiscMB = int.TryParse(config.GetSection("importantArchiveDiscMB").Value, out var v) ? v : 4000;
-            _regularArchiveDiscMB = int.TryParse(config.GetSection("regularArchiveDiscMB").Value, out v) ? v : 4000;
+            _basePath = Path.GetFullPath(config.GetSection("basePath")?.Value ?? throw new ArgumentNullException("You must provide a basePath"));
+            _destinationPath = Path.GetFullPath(config.GetSection("destinationPath")?.Value ?? throw new ArgumentNullException("You must provide a destinationPath"));
+            _sourceCodePath = Path.GetFullPath(config.GetSection("sourceCodePath")?.Value ?? throw new ArgumentNullException("You must provide a sourceCodePath"));
+            _browserHtmlPath = Path.GetFullPath(config.GetSection("browserHtmlPath")?.Value ?? throw new ArgumentNullException("You must provide a browserHtmlPath"));
+            _importantArchiveDiscMB = int.TryParse(config.GetSection("importantArchiveDiscMB")?.Value, out var v) ? v : 4000;
+            _regularArchiveDiscMB = int.TryParse(config.GetSection("regularArchiveDiscMB")?.Value, out v) ? v : 4000;
+            _copyOnly = bool.TryParse(config.GetSection("copyOnly")?.Value, out var b) && b;
+            _test = bool.TryParse(config.GetSection("test")?.Value, out b) && b;
 
             var folders = config.GetSection("importantArchiveFolders").Value?.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries) ?? new string[0];
             if (folders.Length == 0)
@@ -113,15 +127,20 @@ namespace Archiver
 
             Log($"Processing {files.Count} unique {type} archive files");
             var extraFiles = FindExtraFiles();
-            var discs = SplitIntoDiscs(Path.Combine(_destinationPath, $"{type}Archive"), files, extraFiles.Sum(x => x.Size), maxDiscSizeInBytes).ToList();
+            var metaDataLength = DetermineMetaDataLength(files);
+            var discs = SplitIntoDiscs(Path.Combine(_destinationPath, $"{type}Archive"), files, extraFiles.Sum(x => x.Size) + metaDataLength, maxDiscSizeInBytes).ToList();
             var metaData = GenerateMetaData(discs);
 
             foreach (var disc in discs)
             {
-                AddFilesToDiscFolder(disc, extraFiles, false);
-                AddFilesToDiscFolder(disc, new[] { metaData }, false);
+                Log($"    Creating disc {disc.DiscNumber} of {discs.Count}");
+                Log("        Adding source, binary, html, and meta-data files");
+                AddFilesToDiscFolder(disc, extraFiles.Concat(new[] { metaData }), false);
                 WriteDiscMetaData(disc);
-                AddFilesToDiscFolder(disc, disc.Files, true);
+
+                var action = _copyOnly ? "Copy" : "Mov";
+                Log($"        {action}ing {disc.Files.Count} content files");
+                AddFilesToDiscFolder(disc, disc.Files, !_copyOnly);
             }
 
             File.Delete(metaData.PrincipalPath);
@@ -159,16 +178,13 @@ namespace Archiver
             var extraFiles = new List<FileData>();
 
             // Add all the code binary files
-            extraFiles.AddRange(GetFiles(Path.GetDirectoryName(new Uri(Assembly.GetExecutingAssembly().CodeBase).LocalPath), _metaDataFolder));
+            extraFiles.AddRange(GetFiles(Path.GetDirectoryName(new Uri(Assembly.GetExecutingAssembly().CodeBase).LocalPath), _metaDataFolder + "\\binaries\\"));
 
             // Add all files from the source code
-            extraFiles.AddRange(GetFiles(_sourceCodePath, _metaDataFolder, "bin", "obj"));
+            extraFiles.AddRange(GetFiles(_sourceCodePath, _metaDataFolder + "\\source\\", "bin", "obj"));
 
-            // Make the index.html file appear in the root so that they see it when browsing the disc
-            extraFiles.ForEach(x =>
-            {
-                if (x.PrincipalPath.EndsWith(_indexFileName)) x.ChangeRelativePathPrefix("");
-            });
+            // Add the HTML files
+            extraFiles.AddRange(GetFiles(_browserHtmlPath, ""));
 
             return extraFiles;
         }
@@ -203,110 +219,146 @@ namespace Archiver
         {
             // Record each file name, and if it has a JSON file, also record the title, when it was taken (photoTakenTime/creationTime), where it was taken (geoData/geoDataExif), its description, and which people are in it
             var tempDir = Path.GetTempFileName();
-            var metaDir = Path.Combine(tempDir, _metaDataFolder.TrimEnd('\\'));
-            var uniqueId = 0L;
+            var metaDir = Path.Combine(tempDir, _metaDataFolder);
 
             File.Delete(tempDir);
             Directory.CreateDirectory(metaDir);
 
-            var tempFile = Path.Combine(metaDir, "metaData.json");
+            var tempFile = Path.Combine(metaDir, "metaData.js");
 
-            using (var wtr = new StreamWriter(tempFile))
-            using (var json = new JsonTextWriter(wtr))
-            {
-                json.WriteStartObject();
-                json.WritePropertyName("fieldMeaning");
-                json.WriteStartObject();
-                json.WritePropertyName("u");
-                json.WriteValue("Unique ID");
-                json.WritePropertyName("n");
-                json.WriteValue("Name");
-                json.WritePropertyName("r");
-                json.WriteValue("Relative Path");
-                json.WritePropertyName("t");
-                json.WriteValue("Title");
-                json.WritePropertyName("d");
-                json.WriteValue("Timestamp of the date it was taken");
-                json.WritePropertyName("l");
-                json.WriteValue("Location it was taken at, as latitude,longitude");
-                json.WritePropertyName("x");
-                json.WriteValue("Description/Notes");
-                json.WritePropertyName("p");
-                json.WriteValue("People");
-                json.WritePropertyName("c");
-                json.WriteValue("Disc number the file is found on");
-                json.WriteEndObject();
-                json.WritePropertyName("files");
-                json.WriteStartArray();
-
-                foreach (var discFile in discs.SelectMany(x => x.Files.Select(y => (Disc: x, File: y))))
-                {
-                    json.WriteStartObject();
-                    json.WritePropertyName("u");
-                    json.WriteValue(++uniqueId);
-                    json.WritePropertyName("n");
-                    json.WriteValue(Path.GetFileName(discFile.File.PrincipalPath));
-                    json.WritePropertyName("r");
-                    json.WriteValue(discFile.File.PrincipalRelativePath.Replace('\\', '/'));
-
-                    if (!string.IsNullOrWhiteSpace(discFile.File.MetaDataPath))
-                    {
-                        var metaDataText = File.ReadAllText(discFile.File.MetaDataPath);
-                        var metaData = JsonConvert.DeserializeObject<GoogleMetaData>(metaDataText);
-
-                        if (!string.IsNullOrWhiteSpace(metaData.Title)) { json.WritePropertyName("t"); json.WriteValue(metaData.Title); }
-
-                        var date = metaData.PhotoTakenTime ?? metaData.CreationTime;
-                        if (long.TryParse(date?.Timestamp, out var ts)) { json.WritePropertyName("d"); json.WriteValue(ts > 0 && ts < 10000000000 ? ts * 1000 : ts); }
-
-                        var lat = metaData.GeoData?.Latitude ?? metaData.GeoDataExif?.Latitude;
-                        var lng = metaData.GeoData?.Longitude ?? metaData.GeoDataExif?.Longitude;
-                        if (lat != null && double.IsFinite(lat.Value) && lat != 0.0 && lng != null && double.IsFinite(lng.Value) && lng != 0.0) { json.WritePropertyName("l"); json.WriteValue($"{lat},{lng}"); }
-
-                        if (!string.IsNullOrWhiteSpace(metaData.Description)) { json.WritePropertyName("x"); json.WriteValue(metaData.Description); }
-
-                        var people = metaData.People?.Where(x => !string.IsNullOrWhiteSpace(x?.Name)).ToArray();
-                        if (people != null && people.Length > 0)
-                        {
-                            json.WritePropertyName("p");
-                            json.WriteStartArray();
-                            
-                            foreach (var person in people)
-                            {
-                                json.WriteValue(person.Name);
-                            }
-
-                            json.WriteEndArray();
-                        }
-                    }
-
-                    json.WriteEndObject();
-                }
-
-                json.WriteEndArray();
-                json.WriteEndObject();
-
-                json.Flush();
-            }
+            using (var str = File.OpenWrite(tempFile))
+                GenerateMetaData(discs, str);
 
             return new FileData(tempDir, tempFile, "");
         }
 
-        private static void WriteDiscMetaData(DiscData disc)
+        private static long DetermineMetaDataLength(List<FileData> files)
         {
-            using (var wtr = new StreamWriter(Path.Combine(disc.Path, _metaDataFolder.TrimEnd('\\'), "discMetaData.json")))
-            using (var json = new JsonTextWriter(wtr))
+            var discs = new List<DiscData> { new DiscData(_destinationPath, 1, files) };
+
+            using (var str = new MemoryStream())
             {
-                json.WriteStartObject();
-                json.WritePropertyName("discNumber");
-                json.WriteValue(disc.DiscNumber);
-                json.WriteEndObject();
-                json.Flush();
+                GenerateMetaData(discs, str);
+                return str.Position;
             }
         }
 
-        private static void AddFilesToDiscFolder(DiscData disc, IEnumerable<FileData> files, bool moveFile)
+        private static void GenerateMetaData(List<DiscData> discs, Stream outputStream)
         {
+            var uniqueId = 0L;
+
+            using (var wtr = new StreamWriter(outputStream, leaveOpen: true))
+            {
+                wtr.Write("window.archiverMetaData = ");
+
+                using (var json = new JsonTextWriter(wtr))
+                {
+                    json.WriteStartObject();
+                    json.WritePropertyName("fieldMeaning");
+                    json.WriteStartObject();
+                    json.WritePropertyName("u");
+                    json.WriteValue("Unique ID");
+                    json.WritePropertyName("n");
+                    json.WriteValue("Name");
+                    json.WritePropertyName("r");
+                    json.WriteValue("Relative Path");
+                    json.WritePropertyName("t");
+                    json.WriteValue("Title");
+                    json.WritePropertyName("d");
+                    json.WriteValue("Date Taken");
+                    json.WritePropertyName("l");
+                    json.WriteValue("Location Coordinates");
+                    json.WritePropertyName("x");
+                    json.WriteValue("Description/Notes");
+                    json.WritePropertyName("p");
+                    json.WriteValue("People");
+                    json.WritePropertyName("c");
+                    json.WriteValue("Archival Disc Number");
+                    json.WriteEndObject();
+                    json.WritePropertyName("files");
+                    json.WriteStartArray();
+
+                    foreach (var discFile in discs.SelectMany(x => x.Files.Select(y => (Disc: x, File: y))))
+                    {
+                        json.WriteStartObject();
+                        json.WritePropertyName("u");
+                        json.WriteValue(++uniqueId);
+                        json.WritePropertyName("n");
+                        json.WriteValue(Path.GetFileName(discFile.File.PrincipalPath));
+                        json.WritePropertyName("r");
+                        json.WriteValue(discFile.File.PrincipalRelativePath.Replace('\\', '/'));
+
+                        if (!string.IsNullOrWhiteSpace(discFile.File.MetaDataPath))
+                        {
+                            var metaDataText = File.ReadAllText(discFile.File.MetaDataPath);
+                            var metaData = JsonConvert.DeserializeObject<GoogleMetaData>(metaDataText);
+
+                            if (!string.IsNullOrWhiteSpace(metaData.Title)) { json.WritePropertyName("t"); json.WriteValue(metaData.Title); }
+
+                            var date = metaData.PhotoTakenTime ?? metaData.CreationTime;
+                            if (long.TryParse(date?.Timestamp, out var ts)) { json.WritePropertyName("d"); json.WriteValue(ts > 0 && ts < 10000000000 ? ts * 1000 : ts); }
+
+                            var lat = metaData.GeoData?.Latitude ?? metaData.GeoDataExif?.Latitude;
+                            var lng = metaData.GeoData?.Longitude ?? metaData.GeoDataExif?.Longitude;
+                            if (lat != null && double.IsFinite(lat.Value) && lat != 0.0 && lng != null && double.IsFinite(lng.Value) && lng != 0.0) { json.WritePropertyName("l"); json.WriteValue($"{lat},{lng}"); }
+
+                            if (!string.IsNullOrWhiteSpace(metaData.Description)) { json.WritePropertyName("x"); json.WriteValue(metaData.Description); }
+
+                            var people = metaData.People?.Where(x => !string.IsNullOrWhiteSpace(x?.Name)).ToArray();
+                            if (people != null && people.Length > 0)
+                            {
+                                json.WritePropertyName("p");
+                                json.WriteStartArray();
+
+                                foreach (var person in people)
+                                {
+                                    json.WriteValue(person.Name);
+                                }
+
+                                json.WriteEndArray();
+                            }
+                        }
+
+                        json.WritePropertyName("c");
+                        json.WriteValue(discFile.Disc.DiscNumber);
+                        json.WriteEndObject();
+                    }
+
+                    json.WriteEndArray();
+                    json.WriteEndObject();
+
+                    json.Flush();
+                }
+            }
+        }
+
+        private static void WriteDiscMetaData(DiscData disc)
+        {
+            if (_test) return;
+
+            using (var wtr = new StreamWriter(Path.Combine(disc.Path, _metaDataFolder, "discMetaData.js")))
+            {
+                wtr.Write("window.archiverDiscMetaData = ");
+                using (var json = new JsonTextWriter(wtr))
+                {
+                    json.WriteStartObject();
+                    json.WritePropertyName("discNumber");
+                    json.WriteValue(disc.DiscNumber);
+                    json.WriteEndObject();
+                    json.Flush();
+                }
+            }
+        }
+
+        private static void AddFilesToDiscFolder(DiscData disc, IEnumerable<FileData> files, bool moveFiles)
+        {
+            if (_test)
+            {
+                if (moveFiles) Log("            Skipping moving because we are in test mode");
+                else Log("            Not copying because we are in test mode");
+                return;
+            }
+
             foreach (var file in files)
             {
                 foreach (var path in file.Paths)
@@ -323,7 +375,7 @@ namespace Archiver
                         {
                             Directory.CreateDirectory(Path.GetDirectoryName(dest));
 
-                            if (moveFile) File.Move(path.Full, dest, true);
+                            if (moveFiles) File.Move(path.Full, dest, true);
                             else File.Copy(path.Full, dest, true);
 
                             written = true;

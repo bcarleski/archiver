@@ -4,7 +4,7 @@
     <div>
       <h2>Find files:</h2>
       <p>Taken
-        <input type="number" min="1" step="1" max="4000" v-model="distance" placeholder="distance in miles" />
+        <input type="number" min="1" step="1" max="4000" v-model="distance" placeholder="distance" />
         miles from
         <input type="number" min="-180" max="180" step="0.00000001" v-model="latitude" placeholder="latitude">
         x
@@ -13,8 +13,33 @@
       <p>Containing the word <input type="text" v-model="keyword" placeholder="keyword" /></p>
     </div>
     <div>Matching {{filteredFiles.length}} files</div>
-    <div v-for="file in filteredFiles" :key="file.u">
-      {{file.r}}
+    <div class="grid-container">
+      <div class="tree-container">
+        <div v-for="file in filteredFiles" :key="file.u">
+          <a @click.prevent.stop="selectedFile = file" href="#">{{file.r}}</a>
+        </div>
+      </div>
+      <div class="detail-container">
+        <div v-if="selectedFile">
+          <a :href="selectedFile.r" target="_blank" v-if="currentDisc === selectedFile.c">
+            <img :src="selectedFile.r" v-if="selectedFileIsImage" class="preview-image" />
+            <span v-else>{{selectedFile.n}}</span>
+          </a>
+          <table>
+            <tbody>
+              <tr v-for="field in fields" :key="field.key">
+                <th>{{field.value}}</th>
+                <td>
+                  <a target="_blank" :href="'https://www.google.com/maps/@' + selectedFile['l'] + ',15z'" v-if="field.key === 'l' && selectedFile.l && selectedFile.l.length">{{selectedFile.l}}</a>
+                  <span v-else-if="field.key === 'd' && !isNaN(parseInt(selectedFile.d)) && parseInt(selectedFile.d)">{{new Date(parseInt(selectedFile.d)).toString()}}</span>
+                  <span v-else-if="field.key === 'p' && selectedFile.p && selectedFile.p.length">{{selectedFile.p.join(', ')}}</span>
+                  <span v-else>{{selectedFile[field.key]}}</span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -30,10 +55,13 @@ export default {
   data: function() {
     return {
       files: [],
+      fields: [],
       distance: null,
       latitude: null,
       longitude: null,
-      keyword: null
+      keyword: null,
+      selectedFile: null,
+      currentDisc: null
     }
   },
   computed: {
@@ -64,12 +92,22 @@ export default {
           const distance = this.getDistanceInMiles(lat, flat, lng, flng)
           if (distance > dst) continue;
         }
-        if (kw && !((file.n && file.n.indexOf(kw) >= 0) || (file.t && file.t.indexOf(kw) >= 0) || (file.x && file.x.indexOf(kw) >= 0))) continue;
+        if (kw &&
+          !(
+            (file.n && file.n.indexOf(kw) >= 0) ||
+            (file.t && file.t.indexOf(kw) >= 0) ||
+            (file.x && file.x.indexOf(kw) >= 0) ||
+            (file.p && file.p.filter(x => x.indexOf(kw) >= 0).length > 0)
+          )) continue;
 
         valid.push(file);
       }
 
       return valid
+    },
+    selectedFileIsImage: function() {
+      const name = this.selectedFile.n
+      return /\.(jpg|jpeg|png|bmp|gif|webp|tiff)$/.test(name.toLowerCase())
     }
   },
   methods: {
@@ -92,11 +130,15 @@ export default {
       return distanceInMiles;
     }
   },
-  mounted: async function() {
-    const response = await fetch(process.env.VUE_APP_META_DATA_URL)
-    const metaData = await response.json()
-//    const discData = await fetch(process.env.VUE_APP_DISC_DATA_URL)
-    this.files.splice(0, 0, ...metaData.files)
+  mounted: function() {
+    if (window.archiverMetaData) {
+      this.files.splice(0, 0, ...window.archiverMetaData.files)
+
+      for (var key in window.archiverMetaData.fieldMeaning) {
+        this.fields.push({key, value:window.archiverMetaData.fieldMeaning[key]})
+      }
+    }
+    if (window.archiverDiscMetaData) this.currentDisc = window.archiverDiscMetaData.discNumber
   }
 }
 </script>
@@ -109,5 +151,20 @@ export default {
   text-align: center;
   color: #2c3e50;
   margin-top: 60px;
+}
+
+.grid-container {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-gap: 20px;
+}
+
+th, td {
+  text-align: left;
+}
+
+.preview-image {
+  max-width: 400px;
+  max-height: 400px;
 }
 </style>

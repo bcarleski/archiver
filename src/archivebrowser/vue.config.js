@@ -1,3 +1,4 @@
 module.exports = {
-  assetsDir: '.archiverMetadata'
+  assetsDir: '.archiverMetadata/html',
+  publicPath: './'
 }

@@ -69,10 +69,10 @@ namespace Archiver
                     Console.WriteLine("Required Arguments:");
                     Console.WriteLine("    -b|--base {BasePath}                          The path to the Google Takeout archive containing all the files to archive");
                     Console.WriteLine("    -d|--destination {DestinationPath}            The base destination folder");
-                    Console.WriteLine("    -s|--source {SourceCodePath}                  The URL to the Archiver source code ZIP file");
-                    Console.WriteLine("    -h|--html {BrowserHtmlPath}                   The URL to the Archiver Browser compiled HTML ZIP file");
                     Console.WriteLine();
                     Console.WriteLine("Optional Arguments:");
+                    Console.WriteLine("    -s|--source {SourceCodePath}                  The URL or path to the Archiver source code.  A URL must point to a ZIP file, whereas a local path can point to a folder or ZIP file.");
+                    Console.WriteLine("    -h|--html {BrowserHtmlPath}                   The URL or path to the Archiver Browser compiled HTML.  A URL must point to a ZIP file, whereas a local path can point to a folder or ZIP file.");
                     Console.WriteLine("    -f|--folders {ImportantArchiveFolders}        A semi-colon separated list of relative paths within the base path which should be considered important");
                     Console.WriteLine("    -imb|--importantMB {ImportantArchiveDiscMB}   The size of disc, in megabytes, that will be used for the important files");
                     Console.WriteLine("    -rmb|--regularMB {RegularArchiveDiscMB}       The size of disc, in megabytes, that will be used for non-important files");
@@ -126,10 +126,8 @@ namespace Archiver
 
                 _basePath = Path.GetFullPath(config.GetSection("basePath")?.Value ?? throw new ArgumentNullException("basePath", "You must provide a basePath"));
                 _destinationPath = Path.GetFullPath(config.GetSection("destinationPath")?.Value ?? throw new ArgumentNullException("destinationPath", "You must provide a destinationPath"));
-                _sourceCodePath = Uri.TryCreate(config.GetSection("sourceCodePath")?.Value ?? throw new ArgumentNullException("sourceCodePath", "You must provide a sourceCodePath"), UriKind.Absolute, out var u)
-                    ? u : throw new ArgumentException("Invalid source code URL");
-                _browserHtmlPath = Uri.TryCreate(config.GetSection("browserHtmlPath")?.Value ?? throw new ArgumentNullException("browserHtmlPath", "You must provide a browserHtmlPath"), UriKind.Absolute, out u)
-                    ? u : throw new ArgumentException("Invalid browser HTML URL");
+                _sourceCodePath = Uri.TryCreate(config.GetSection("sourceCodePath")?.Value, UriKind.Absolute, out var u) ? u : null;
+                _browserHtmlPath = Uri.TryCreate(config.GetSection("browserHtmlPath")?.Value, UriKind.Absolute, out u) ? u : null;
 
                 var folders = config.GetSection("importantArchiveFolders").Value?.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries) ?? new string[0];
                 if (folders.Length == 0)
@@ -205,53 +203,107 @@ namespace Archiver
                 );
         }
 
-        private static IEnumerable<FileData> GetFiles(string tempDir, Uri url, string relativePathPrefix)
+        private static IEnumerable<FileData> GetFiles(string tempDir, Uri url, string zipRelativePathPrefix, string expandedRelativePathPrefix)
         {
-            var zipFile = Path.Combine(tempDir, "data.zip");
-            var expandedDir = Path.Combine(tempDir, "expanded");
-            Directory.CreateDirectory(expandedDir);
-
-            using (var http = new WebClient())
+            if (url.Scheme.ToLowerInvariant() == "file" && Directory.Exists(url.LocalPath))
             {
-                http.DownloadFile(url, zipFile);
+                return GetFiles(Path.GetFullPath(url.LocalPath), zipRelativePathPrefix ?? expandedRelativePathPrefix);
             }
 
-            ZipFile.ExtractToDirectory(zipFile, expandedDir, true);
+            string zipFile;
 
-            return GetFiles(expandedDir, relativePathPrefix);
+            if (url.Scheme.ToLowerInvariant() == "file" && File.Exists(url.LocalPath))
+            {
+                zipFile = Path.GetFullPath(url.LocalPath);
+            }
+            else
+            {
+                zipFile = Path.Combine(tempDir, "data.zip");
+                CreateAndUseDirectory(tempDir, () =>
+                {
+                    using (var http = new WebClient())
+                    {
+                        http.DownloadFile(url, zipFile);
+                    }
+                });
+            }
+
+            var files = new List<FileData>();
+
+            if (zipRelativePathPrefix != null)
+            {
+                files.Add(new FileData(Path.GetDirectoryName(zipFile), zipFile, zipRelativePathPrefix));
+            }
+
+            if (expandedRelativePathPrefix != null)
+            {
+                var expandedDir = Path.Combine(tempDir, "expanded");
+                CreateAndUseDirectory(expandedDir, () =>
+                {
+                    ZipFile.ExtractToDirectory(zipFile, expandedDir, true);
+                    files.AddRange(GetFiles(expandedDir, expandedRelativePathPrefix));
+                });
+            }
+
+            return files;
+        }
+
+        private static void CreateAndUseDirectory(string directory, Action repeatableAction)
+        {
+            var success = false;
+            var attempts = 0;
+
+            while (!success && ++attempts < 20)
+            {
+                Directory.CreateDirectory(directory);
+                if (attempts > 0) Thread.Sleep(100);
+
+                try
+                {
+                    repeatableAction();
+                    success = true;
+                }
+                catch(DirectoryNotFoundException ex)
+                {
+                    // Handle an OS bug where the directory might not yet be created before hitting this point
+                    Log("Directory not found, retrying: " + ex);
+                }
+            }
         }
 
         private static void ProcessFiles(string type, List<FileData> files, long maxDiscSizeInBytes)
         {
             var tempDir = Path.GetTempFileName();
             if (File.Exists(tempDir)) File.Delete(tempDir);
-            Directory.CreateDirectory(tempDir);
 
             try
             {
-                DeDuplicateFiles(files);
-
-                Log($"Processing {files.Count} unique {type} archive files");
-                var extraFiles = FindExtraFiles(tempDir);
-                var metaDataLength = DetermineMetaDataLength(files);
-                var discs = SplitIntoDiscs(Path.Combine(_destinationPath, $"{type}Archive"), files, extraFiles.Sum(x => x.Size) + metaDataLength, maxDiscSizeInBytes).ToList();
-                var metaData = GenerateMetaData(discs, tempDir);
-
-                foreach (var disc in discs)
+                CreateAndUseDirectory(tempDir, () =>
                 {
-                    Log($"    Creating disc {disc.DiscNumber} of {discs.Count}");
-                    Log("        Adding source, binary, html, and meta-data files");
-                    AddFilesToDiscFolder(disc, extraFiles.Concat(new[] { metaData }), false);
-                    WriteDiscMetaData(disc);
+                    DeDuplicateFiles(files);
 
-                    var action = _copyOnly ? "Copy" : "Mov";
-                    Log($"        {action}ing {disc.Files.Count} content files");
-                    AddFilesToDiscFolder(disc, disc.Files, !_copyOnly);
-                }
+                    Log($"Processing {files.Count} unique {type} archive files");
+                    var extraFiles = FindExtraFiles(tempDir);
+                    var metaDataLength = DetermineMetaDataLength(files);
+                    var discs = SplitIntoDiscs(Path.Combine(_destinationPath, $"{type}Archive"), files, extraFiles.Sum(x => x.Size) + metaDataLength, maxDiscSizeInBytes).ToList();
+                    var metaData = GenerateMetaData(discs, tempDir);
+
+                    foreach (var disc in discs)
+                    {
+                        Log($"    Creating disc {disc.DiscNumber} of {discs.Count} at {disc.Path}");
+                        Log("        Adding source, binary, html, and meta-data files");
+                        AddFilesToDiscFolder(disc, extraFiles.Concat(new[] { metaData }), false);
+                        WriteDiscMetaData(disc);
+
+                        var action = _copyOnly ? "Copy" : "Mov";
+                        Log($"        {action}ing {disc.Files.Count} content files");
+                        AddFilesToDiscFolder(disc, disc.Files, !_copyOnly);
+                    }
+                });
             }
             finally
             {
-                Directory.Delete(tempDir, true);
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
             }
         }
 
@@ -289,11 +341,17 @@ namespace Archiver
             // Add all the code binary files
             extraFiles.AddRange(GetFiles(Path.GetDirectoryName(new Uri(Assembly.GetExecutingAssembly().CodeBase).LocalPath), _metaDataFolder + "\\binaries\\"));
 
-            // Add all files from the source code
-            extraFiles.AddRange(GetFiles(Path.Combine(tempDir, "source"), _sourceCodePath, _metaDataFolder + "\\source\\"));
+            if (_sourceCodePath != null)
+            {
+                // Add all files from the source code
+                extraFiles.AddRange(GetFiles(Path.Combine(tempDir, "source"), _sourceCodePath, _metaDataFolder + "\\source\\", null));
+            }
 
-            // Add the HTML files
-            extraFiles.AddRange(GetFiles(Path.Combine(tempDir, "html"), _browserHtmlPath, ""));
+            if (_browserHtmlPath != null)
+            {
+                // Add the HTML files
+                extraFiles.AddRange(GetFiles(Path.Combine(tempDir, "html"), _browserHtmlPath, _metaDataFolder + "\\html\\", ""));
+            }
 
             return extraFiles;
         }
@@ -326,12 +384,16 @@ namespace Archiver
 
         private static FileData GenerateMetaData(List<DiscData> discs, string tempDir)
         {
-            // Record each file name, and if it has a JSON file, also record the title, when it was taken (photoTakenTime/creationTime), where it was taken (geoData/geoDataExif), its description, and which people are in it
             var metaDir = Path.Combine(tempDir, _metaDataFolder);
             var tempFile = Path.Combine(metaDir, "metaData.js");
 
-            using (var str = File.OpenWrite(tempFile))
-                GenerateMetaData(discs, str);
+            CreateAndUseDirectory(metaDir, () =>
+            {
+                using (var str = File.OpenWrite(tempFile))
+                {
+                    GenerateMetaData(discs, str);
+                }
+            });
 
             return new FileData(tempDir, tempFile, "");
         }
@@ -340,7 +402,7 @@ namespace Archiver
         {
             var discs = new List<DiscData> { new DiscData(_destinationPath, 1, files) };
 
-            using (var str = new MemoryStream())
+            using (var str = new LengthCheckStream())
             {
                 GenerateMetaData(discs, str);
                 return str.Position;
@@ -351,6 +413,7 @@ namespace Archiver
         {
             var uniqueId = 0L;
 
+            // Record each file name, and if it has a JSON file, also record the title, when it was taken (photoTakenTime/creationTime), where it was taken (geoData/geoDataExif), its description, and which people are in it
             using (var wtr = new StreamWriter(outputStream, leaveOpen: true))
             {
                 wtr.Write("window.archiverMetaData = ");
@@ -440,25 +503,29 @@ namespace Archiver
         {
             if (_test) return;
 
-            using (var wtr = new StreamWriter(Path.Combine(disc.Path, _metaDataFolder, "discMetaData.js")))
+            var directory = Path.Combine(disc.Path, _metaDataFolder);
+            CreateAndUseDirectory(directory, () =>
             {
-                wtr.Write("window.archiverDiscMetaData = ");
-                using (var json = new JsonTextWriter(wtr))
+                using (var wtr = new StreamWriter(Path.Combine(directory, "discMetaData.js")))
                 {
-                    json.WriteStartObject();
-                    json.WritePropertyName("discNumber");
-                    json.WriteValue(disc.DiscNumber);
-                    json.WriteEndObject();
-                    json.Flush();
+                    wtr.Write("window.archiverDiscMetaData = ");
+                    using (var json = new JsonTextWriter(wtr))
+                    {
+                        json.WriteStartObject();
+                        json.WritePropertyName("discNumber");
+                        json.WriteValue(disc.DiscNumber);
+                        json.WriteEndObject();
+                        json.Flush();
+                    }
                 }
-            }
+            });
         }
 
         private static void AddFilesToDiscFolder(DiscData disc, IEnumerable<FileData> files, bool moveFiles)
         {
             if (_test)
             {
-                if (moveFiles) Log("            Skipping moving because we are in test mode");
+                if (moveFiles) Log("            Not moving because we are in test mode");
                 else Log("            Not copying because we are in test mode");
                 return;
             }
@@ -468,27 +535,11 @@ namespace Archiver
                 foreach (var path in file.Paths)
                 {
                     var dest = Path.Combine(disc.Path, path.Relative);
-                    var writeAttempts = 0;
-                    var written = false;
-
-                    while (!written && writeAttempts++ < 20)
+                    CreateAndUseDirectory(Path.GetDirectoryName(dest), () =>
                     {
-                        if (writeAttempts > 1) Thread.Sleep(200);
-
-                        try
-                        {
-                            Directory.CreateDirectory(Path.GetDirectoryName(dest));
-
-                            if (moveFiles) File.Move(path.Full, dest, true);
-                            else File.Copy(path.Full, dest, true);
-
-                            written = true;
-                        }
-                        catch (DirectoryNotFoundException)
-                        {
-                            // Handles an OS bug where it can sometimes return from the CreateDirectory call before the directory is actually available to use
-                        }
-                    }
+                        if (moveFiles) File.Move(path.Full, dest, true);
+                        else File.Copy(path.Full, dest, true);
+                    });
                 }
             }
         }

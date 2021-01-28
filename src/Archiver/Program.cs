@@ -3,7 +3,10 @@ using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
+using System.Net;
+using System.Net.Http;
 using System.Reflection;
 using System.Threading;
 
@@ -17,8 +20,8 @@ namespace Archiver
         private static string _basePath;
         private static string[] _importantArchiveFolders;
         private static string _destinationPath;
-        private static string _sourceCodePath;
-        private static string _browserHtmlPath;
+        private static Uri _sourceCodePath;
+        private static Uri _browserHtmlPath;
         private static long _importantArchiveDiscMB;
         private static long _regularArchiveDiscMB;
         private static bool _copyOnly;
@@ -65,12 +68,12 @@ namespace Archiver
                     Console.WriteLine();
                     Console.WriteLine("Required Arguments:");
                     Console.WriteLine("    -b|--base {BasePath}                          The path to the Google Takeout archive containing all the files to archive");
-                    Console.WriteLine("    -f|--folders {ImportantArchiveFolders}        A semi-colon separated list of relative paths within the base path which should be considered important");
                     Console.WriteLine("    -d|--destination {DestinationPath}            The base destination folder");
-                    Console.WriteLine("    -s|--source {SourceCodePath}                  The path to the Archiver source code");
-                    Console.WriteLine("    -h|--html {BrowserHtmlPath}                   The path to the Archiver Browser compiled HTML");
+                    Console.WriteLine("    -s|--source {SourceCodePath}                  The URL to the Archiver source code ZIP file");
+                    Console.WriteLine("    -h|--html {BrowserHtmlPath}                   The URL to the Archiver Browser compiled HTML ZIP file");
                     Console.WriteLine();
                     Console.WriteLine("Optional Arguments:");
+                    Console.WriteLine("    -f|--folders {ImportantArchiveFolders}        A semi-colon separated list of relative paths within the base path which should be considered important");
                     Console.WriteLine("    -imb|--importantMB {ImportantArchiveDiscMB}   The size of disc, in megabytes, that will be used for the important files");
                     Console.WriteLine("    -rmb|--regularMB {RegularArchiveDiscMB}       The size of disc, in megabytes, that will be used for non-important files");
                     Console.WriteLine("    -c|--copy (true|false)                        If true, then files will be copied into the destination folder.  If false, they will be moved in.  Defaults to false.");
@@ -123,8 +126,10 @@ namespace Archiver
 
                 _basePath = Path.GetFullPath(config.GetSection("basePath")?.Value ?? throw new ArgumentNullException("basePath", "You must provide a basePath"));
                 _destinationPath = Path.GetFullPath(config.GetSection("destinationPath")?.Value ?? throw new ArgumentNullException("destinationPath", "You must provide a destinationPath"));
-                _sourceCodePath = Path.GetFullPath(config.GetSection("sourceCodePath")?.Value ?? throw new ArgumentNullException("sourceCodePath", "You must provide a sourceCodePath"));
-                _browserHtmlPath = Path.GetFullPath(config.GetSection("browserHtmlPath")?.Value ?? throw new ArgumentNullException("browserHtmlPath", "You must provide a browserHtmlPath"));
+                _sourceCodePath = Uri.TryCreate(config.GetSection("sourceCodePath")?.Value ?? throw new ArgumentNullException("sourceCodePath", "You must provide a sourceCodePath"), UriKind.Absolute, out var u)
+                    ? u : throw new ArgumentException("Invalid source code URL");
+                _browserHtmlPath = Uri.TryCreate(config.GetSection("browserHtmlPath")?.Value ?? throw new ArgumentNullException("browserHtmlPath", "You must provide a browserHtmlPath"), UriKind.Absolute, out u)
+                    ? u : throw new ArgumentException("Invalid browser HTML URL");
 
                 var folders = config.GetSection("importantArchiveFolders").Value?.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries) ?? new string[0];
                 if (folders.Length == 0)
@@ -188,17 +193,37 @@ namespace Archiver
             }
         }
 
-        private static IEnumerable<FileData> GetFiles(string root, string relativePathPrefix, params string[] excludedFolders)
+        private static IEnumerable<FileData> GetFiles(string root, string relativePathPrefix)
         {
             var basePath = Path.GetFullPath(root);
             var baseDir = new DirectoryInfo(basePath);
             return baseDir
                 .EnumerateFiles("*", SearchOption.TopDirectoryOnly).Select(x => new FileData(basePath, x.FullName, relativePathPrefix))
                     .Concat(baseDir.EnumerateDirectories()
-                    .Where(x => excludedFolders == null || !excludedFolders.Contains(x.Name))
                     .AsParallel()
                     .SelectMany(x => x.EnumerateFiles("*", SearchOption.AllDirectories).Select(y => new FileData(basePath, y.FullName, relativePathPrefix)))
                 );
+        }
+
+        private static IEnumerable<FileData> GetFiles(Uri url, string relativePathPrefix)
+        {
+            var tempDir = Path.GetTempFileName();
+
+            if (File.Exists(tempDir)) File.Delete(tempDir);
+            Directory.CreateDirectory(tempDir);
+
+            var zipFile = Path.Combine(tempDir, "data.zip");
+            var expandedDir = Path.Combine(tempDir, "expanded");
+            Directory.CreateDirectory(expandedDir);
+
+            using (var http = new WebClient())
+            {
+                http.DownloadFile(url, zipFile);
+            }
+
+            ZipFile.ExtractToDirectory(zipFile, expandedDir, true);
+
+            return GetFiles(expandedDir, relativePathPrefix);
         }
 
         private static void ProcessFiles(string type, List<FileData> files, long maxDiscSizeInBytes)
@@ -261,7 +286,7 @@ namespace Archiver
             extraFiles.AddRange(GetFiles(Path.GetDirectoryName(new Uri(Assembly.GetExecutingAssembly().CodeBase).LocalPath), _metaDataFolder + "\\binaries\\"));
 
             // Add all files from the source code
-            extraFiles.AddRange(GetFiles(_sourceCodePath, _metaDataFolder + "\\source\\", "bin", "obj"));
+            extraFiles.AddRange(GetFiles(_sourceCodePath, _metaDataFolder + "\\source\\"));
 
             // Add the HTML files
             extraFiles.AddRange(GetFiles(_browserHtmlPath, ""));

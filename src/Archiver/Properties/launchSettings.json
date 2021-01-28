@@ -2,7 +2,7 @@
   "profiles": {
     "Archiver": {
       "commandName": "Project",
-      "commandLineArgs": "-b \"C:\\Users\\bcarleski\\Downloads\\Archiving\\Source\\Takeout\" -f \"Google Photos\\Photos for Extra Archiving\" -d \"C:\\Users\\bcarleski\\Downloads\\Archiving\\Destination\" -s \"C:\\src\\Carleski.com\\archiver\\src\\Archiver\" -h \"C:\\src\\Carleski.com\\archiver\\src\\archivebrowser\\dist\" -imb 24500 -rmb 1300 -c true"
+      "commandLineArgs": "-b \"C:\\Users\\bcarleski\\Downloads\\Archiving\\Source\\Takeout\" -f \"Google Photos\\Photos for Extra Archiving\" -d \"C:\\Users\\bcarleski\\Downloads\\Archiving\\Destination\" -s \"https://github.com/bcarleski/archiver/archive/master.zip\" -h \"https://nightly.link/bcarleski/archiver/workflows/main/master/archiveBrowserHtml.zip\" -imb 24500 -rmb 1300 -c true"
     }
   }
 }

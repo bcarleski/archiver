@@ -205,13 +205,8 @@ namespace Archiver
                 );
         }
 
-        private static IEnumerable<FileData> GetFiles(Uri url, string relativePathPrefix)
+        private static IEnumerable<FileData> GetFiles(string tempDir, Uri url, string relativePathPrefix)
         {
-            var tempDir = Path.GetTempFileName();
-
-            if (File.Exists(tempDir)) File.Delete(tempDir);
-            Directory.CreateDirectory(tempDir);
-
             var zipFile = Path.Combine(tempDir, "data.zip");
             var expandedDir = Path.Combine(tempDir, "expanded");
             Directory.CreateDirectory(expandedDir);
@@ -228,27 +223,36 @@ namespace Archiver
 
         private static void ProcessFiles(string type, List<FileData> files, long maxDiscSizeInBytes)
         {
-            DeDuplicateFiles(files);
+            var tempDir = Path.GetTempFileName();
+            if (File.Exists(tempDir)) File.Delete(tempDir);
+            Directory.CreateDirectory(tempDir);
 
-            Log($"Processing {files.Count} unique {type} archive files");
-            var extraFiles = FindExtraFiles();
-            var metaDataLength = DetermineMetaDataLength(files);
-            var discs = SplitIntoDiscs(Path.Combine(_destinationPath, $"{type}Archive"), files, extraFiles.Sum(x => x.Size) + metaDataLength, maxDiscSizeInBytes).ToList();
-            var metaData = GenerateMetaData(discs);
-
-            foreach (var disc in discs)
+            try
             {
-                Log($"    Creating disc {disc.DiscNumber} of {discs.Count}");
-                Log("        Adding source, binary, html, and meta-data files");
-                AddFilesToDiscFolder(disc, extraFiles.Concat(new[] { metaData }), false);
-                WriteDiscMetaData(disc);
+                DeDuplicateFiles(files);
 
-                var action = _copyOnly ? "Copy" : "Mov";
-                Log($"        {action}ing {disc.Files.Count} content files");
-                AddFilesToDiscFolder(disc, disc.Files, !_copyOnly);
+                Log($"Processing {files.Count} unique {type} archive files");
+                var extraFiles = FindExtraFiles(tempDir);
+                var metaDataLength = DetermineMetaDataLength(files);
+                var discs = SplitIntoDiscs(Path.Combine(_destinationPath, $"{type}Archive"), files, extraFiles.Sum(x => x.Size) + metaDataLength, maxDiscSizeInBytes).ToList();
+                var metaData = GenerateMetaData(discs, tempDir);
+
+                foreach (var disc in discs)
+                {
+                    Log($"    Creating disc {disc.DiscNumber} of {discs.Count}");
+                    Log("        Adding source, binary, html, and meta-data files");
+                    AddFilesToDiscFolder(disc, extraFiles.Concat(new[] { metaData }), false);
+                    WriteDiscMetaData(disc);
+
+                    var action = _copyOnly ? "Copy" : "Mov";
+                    Log($"        {action}ing {disc.Files.Count} content files");
+                    AddFilesToDiscFolder(disc, disc.Files, !_copyOnly);
+                }
             }
-
-            File.Delete(metaData.PrincipalPath);
+            finally
+            {
+                Directory.Delete(tempDir, true);
+            }
         }
 
         private static void DeDuplicateFiles(List<FileData> files)
@@ -278,7 +282,7 @@ namespace Archiver
             toRemove.ForEach(x => files.Remove(x));
         }
 
-        private static List<FileData> FindExtraFiles()
+        private static List<FileData> FindExtraFiles(string tempDir)
         {
             var extraFiles = new List<FileData>();
 
@@ -286,10 +290,10 @@ namespace Archiver
             extraFiles.AddRange(GetFiles(Path.GetDirectoryName(new Uri(Assembly.GetExecutingAssembly().CodeBase).LocalPath), _metaDataFolder + "\\binaries\\"));
 
             // Add all files from the source code
-            extraFiles.AddRange(GetFiles(_sourceCodePath, _metaDataFolder + "\\source\\"));
+            extraFiles.AddRange(GetFiles(Path.Combine(tempDir, "source"), _sourceCodePath, _metaDataFolder + "\\source\\"));
 
             // Add the HTML files
-            extraFiles.AddRange(GetFiles(_browserHtmlPath, ""));
+            extraFiles.AddRange(GetFiles(Path.Combine(tempDir, "html"), _browserHtmlPath, ""));
 
             return extraFiles;
         }
@@ -320,15 +324,10 @@ namespace Archiver
             if (discFiles.Count > 0) yield return new DiscData(baseDestinationPath, discNumber, discFiles);
         }
 
-        private static FileData GenerateMetaData(List<DiscData> discs)
+        private static FileData GenerateMetaData(List<DiscData> discs, string tempDir)
         {
             // Record each file name, and if it has a JSON file, also record the title, when it was taken (photoTakenTime/creationTime), where it was taken (geoData/geoDataExif), its description, and which people are in it
-            var tempDir = Path.GetTempFileName();
             var metaDir = Path.Combine(tempDir, _metaDataFolder);
-
-            File.Delete(tempDir);
-            Directory.CreateDirectory(metaDir);
-
             var tempFile = Path.Combine(metaDir, "metaData.js");
 
             using (var str = File.OpenWrite(tempFile))

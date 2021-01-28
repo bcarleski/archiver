@@ -1,14 +1,20 @@
-﻿using System.Collections.Generic;
+﻿using Newtonsoft.Json;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
 
 namespace Archiver
 {
+    [JsonObject(MemberSerialization = MemberSerialization.Fields)]
     class FileData
     {
         private readonly List<(string, string)> _paths;
 
+        [JsonConstructor]
+        private FileData()
+        {
+        }
         public FileData(string basePath, string path, string relativePathPrefix)
         {
             var file = new FileInfo(path);

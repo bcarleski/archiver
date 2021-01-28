@@ -31,7 +31,7 @@ namespace Archiver
             try
             {
                 Log($"Finding files under {_basePath}");
-                var files = GetFiles(_basePath, "").ToList();
+                var files = GetBaseFiles();
 
                 Log($"Found {files.Count} files");
                 var importantArchiveFiles = files.Where(x => _importantArchiveFolders.Any(y => x.PrincipalPath.StartsWith(y + '\\'))).ToList();
@@ -157,6 +157,35 @@ namespace Archiver
         private static void Log(string message)
         {
             Console.WriteLine($"{DateTime.Now.ToString("O")} - {message}");
+        }
+
+        private static List<FileData> GetBaseFiles()
+        {
+            var savedJson = Path.Combine(_basePath, ".archiverFileData.json");
+            if (File.Exists(savedJson))
+            {
+                using (var wtr = new StreamReader(savedJson))
+                using (var json = new JsonTextReader(wtr))
+                {
+                    var serializer = new JsonSerializer();
+                    var files = serializer.Deserialize<List<FileData>>(json);
+
+                    return files;
+                }
+            }
+            else
+            {
+                var files = GetFiles(_basePath, "").ToList();
+
+                using (var wtr = new StreamWriter(savedJson))
+                using (var json = new JsonTextWriter(wtr))
+                {
+                    var serializer = new JsonSerializer();
+                    serializer.Serialize(json, files);
+                }
+
+                return files;
+            }
         }
 
         private static IEnumerable<FileData> GetFiles(string root, string relativePathPrefix, params string[] excludedFolders)

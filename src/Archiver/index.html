@@ -1,0 +1,28 @@
+<html>
+    <head>
+        <title>Archive Data</title>
+        <script>
+function getDistanceInMiles(latitude1InDegrees, latitude2InDegrees, longitude1InDegrees, longitude2InDegrees)
+{
+	// Uses the haversine formula to calculate the great-circle distance between two points
+	const earthRadiusInMiles = 3958.8;
+	const latitude1InRadians = latitude1InDegrees * Math.PI/180;
+	const latitude2InRadians = latitude2InDegrees * Math.PI/180;
+	const latitudeDeltaInRadians = (latitude2InDegrees - latitude1InDegrees) * Math.PI/180;
+	const longitudeDeltaInRadians = (longitude1InDegrees - longitude2InDegrees) * Math.PI/180;
+
+	const squareOfHalfChordLength = Math.sin(latitudeDeltaInRadians / 2) * Math.sin(latitudeDeltaInRadians / 2) +
+			  Math.cos(latitude1InRadians) * Math.cos(latitude2InRadians) *
+			  Math.sin(longitudeDeltaInRadians / 2) * Math.sin(longitudeDeltaInRadians / 2);
+	const angularDistanceInRadians = 2 * Math.atan2(Math.sqrt(squareOfHalfChordLength), Math.sqrt(1 - squareOfHalfChordLength));
+
+	const distanceInMiles = earthRadiusInMiles * angularDistanceInRadians;
+	
+	return distanceInMiles;
+}
+        </script>
+    </head>
+    <body>
+		<h1>Archive Data</h1>
+    </body>
+</html>

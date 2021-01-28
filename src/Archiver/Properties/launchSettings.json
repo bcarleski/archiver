@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "Archiver": {
+      "commandName": "Project",
+      "commandLineArgs": "-b \"C:\\\\Users\\\\bcarleski\\\\Downloads\\\\Archiving\\\\Source\\\\Takeout\" -f \"Google Photos\\\\Photos for Extra Archiving\" -d \"C:\\\\Users\\\\bcarleski\\\\Downloads\\\\Archiving\\\\Destination\" -s \"C:\\\\src\\\\Carleski.com\\\\archiver\\\\src\\\\Archiver\" -imb 23000 -rmb 1300"
+    }
+  }
+}

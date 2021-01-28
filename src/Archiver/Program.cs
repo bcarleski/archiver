@@ -24,82 +24,133 @@ namespace Archiver
         private static bool _copyOnly;
         private static bool _test;
 
-        static void Main(string[] args)
+        static int Main(string[] args)
         {
-            LoadConfiguration(args);
+            if (!LoadConfiguration(args)) return 1;
 
-            Log($"Finding files under {_basePath}");
-            var files = GetFiles(_basePath, "").ToList();
+            try
+            {
+                Log($"Finding files under {_basePath}");
+                var files = GetFiles(_basePath, "").ToList();
 
-            Log($"Found {files.Count} files");
-            var importantArchiveFiles = files.Where(x => _importantArchiveFolders.Any(y => x.PrincipalPath.StartsWith(y + '\\'))).ToList();
-            var regularArchiveFiles = files.Where(x => !_importantArchiveFolders.Any(y => x.PrincipalPath.StartsWith(y + '\\'))).ToList();
+                Log($"Found {files.Count} files");
+                var importantArchiveFiles = files.Where(x => _importantArchiveFolders.Any(y => x.PrincipalPath.StartsWith(y + '\\'))).ToList();
+                var regularArchiveFiles = files.Where(x => !_importantArchiveFolders.Any(y => x.PrincipalPath.StartsWith(y + '\\'))).ToList();
 
-            ProcessFiles("important", importantArchiveFiles, _importantArchiveDiscMB * 1000000L);
-            ProcessFiles("regular", regularArchiveFiles, _regularArchiveDiscMB * 1000000L);
+                ProcessFiles("important", importantArchiveFiles, _importantArchiveDiscMB * 1000000L);
+                ProcessFiles("regular", regularArchiveFiles, _regularArchiveDiscMB * 1000000L);
+
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                Log("UNHANDLED EXCEPTION: " + ex.ToString());
+                return 2;
+            }
         }
 
-        private static void LoadConfiguration(string[] args)
+        private static bool LoadConfiguration(string[] args)
         {
-            var env = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
-            var builder = new ConfigurationBuilder()
-                .AddJsonFile($"appSettings.json", true, true)
-                .AddJsonFile($"appSettings.{env}.json", true, true)
-                .AddEnvironmentVariables()
-                .AddCommandLine(args, new Dictionary<string, string>
+            try
+            {
+                if (args == null || args.Length == 0 || args.Select(x => x.ToLowerInvariant()).Any(x => x == "help" || x == "?" || x == "/help" || x == "/?" || x == "-help" || x == "-?" || x == "--help" || x == "--?"))
                 {
-                    ["-b"] = "basePath",
-                    ["--base"] = "basePath",
-                    ["--basePath"] = "basePath",
-                    ["-f"] = "importantArchiveFolders",
-                    ["--folders"] = "importantArchiveFolders",
-                    ["--importantFolders"] = "importantArchiveFolders",
-                    ["--importantArchiveFolders"] = "importantArchiveFolders",
-                    ["-d"] = "destinationPath",
-                    ["--destination"] = "destinationPath",
-                    ["--destinationPath"] = "destinationPath",
-                    ["-s"] = "sourceCodePath",
-                    ["--source"] = "sourceCodePath",
-                    ["--sourceCode"] = "sourceCodePath",
-                    ["--sourceCodePath"] = "sourceCodePath",
-                    ["-h"] = "browserHtmlPath",
-                    ["--html"] = "browserHtmlPath",
-                    ["--browserHtml"] = "browserHtmlPath",
-                    ["--browserHtmlPath"] = "browserHtmlPath",
-                    ["-imb"] = "importantArchiveDiscMB",
-                    ["--importantMB"] = "importantArchiveDiscMB",
-                    ["--importantDiscMB"] = "importantArchiveDiscMB",
-                    ["--importantArchiveDiscMB"] = "importantArchiveDiscMB",
-                    ["-rmb"] = "regularArchiveDiscMB",
-                    ["--regularMB"] = "regularArchiveDiscMB",
-                    ["--regularDiscMB"] = "regularArchiveDiscMB",
-                    ["--regularArchiveDiscMB"] = "regularArchiveDiscMB",
-                    ["-t"] = "test",
-                    ["--test"] = "test",
-                    ["-c"] = "copyOnly",
-                    ["--copy"] = "copyOnly",
-                    ["--copyOnly"] = "copyOnly"
-                });
+                    Console.WriteLine("OVERVIEW:");
+                    Console.WriteLine("The Archiver command takes a Google Takeout archive, and prepares it for writing to optical media.  This includes de-duplicating files, splitting into folders small enough for the optical media, copying the binary and source versions of this program, writing meta-data about the files, and writing an HTML browser that can browse and review the file listings.");
+                    Console.WriteLine();
+                    Console.WriteLine();
+                    Console.WriteLine();
+                    Console.WriteLine("USAGE:");
+                    Console.WriteLine("Archiver {RequiredArguments...} [{OptionalArguments...}]");
+                    Console.WriteLine();
+                    Console.WriteLine("Required Arguments:");
+                    Console.WriteLine("    -b|--base {BasePath}                          The path to the Google Takeout archive containing all the files to archive");
+                    Console.WriteLine("    -f|--folders {ImportantArchiveFolders}        A semi-colon separated list of relative paths within the base path which should be considered important");
+                    Console.WriteLine("    -d|--destination {DestinationPath}            The base destination folder");
+                    Console.WriteLine("    -s|--source {SourceCodePath}                  The path to the Archiver source code");
+                    Console.WriteLine("    -h|--html {BrowserHtmlPath}                   The path to the Archiver Browser compiled HTML");
+                    Console.WriteLine();
+                    Console.WriteLine("Optional Arguments:");
+                    Console.WriteLine("    -imb|--importantMB {ImportantArchiveDiscMB}   The size of disc, in megabytes, that will be used for the important files");
+                    Console.WriteLine("    -rmb|--regularMB {RegularArchiveDiscMB}       The size of disc, in megabytes, that will be used for non-important files");
+                    Console.WriteLine("    -c|--copy (true|false)                        If true, then files will be copied into the destination folder.  If false, they will be moved in.  Defaults to false.");
+                    Console.WriteLine("    -t|--test (true|false)                        If true, files will not actually be copied/moved but the program will perform all other steps.  Defaults to false.");
 
-            var config = builder.Build();
+                    return false;
+                }
 
-            _basePath = Path.GetFullPath(config.GetSection("basePath")?.Value ?? throw new ArgumentNullException("You must provide a basePath"));
-            _destinationPath = Path.GetFullPath(config.GetSection("destinationPath")?.Value ?? throw new ArgumentNullException("You must provide a destinationPath"));
-            _sourceCodePath = Path.GetFullPath(config.GetSection("sourceCodePath")?.Value ?? throw new ArgumentNullException("You must provide a sourceCodePath"));
-            _browserHtmlPath = Path.GetFullPath(config.GetSection("browserHtmlPath")?.Value ?? throw new ArgumentNullException("You must provide a browserHtmlPath"));
-            _importantArchiveDiscMB = int.TryParse(config.GetSection("importantArchiveDiscMB")?.Value, out var v) ? v : 4000;
-            _regularArchiveDiscMB = int.TryParse(config.GetSection("regularArchiveDiscMB")?.Value, out v) ? v : 4000;
-            _copyOnly = bool.TryParse(config.GetSection("copyOnly")?.Value, out var b) && b;
-            _test = bool.TryParse(config.GetSection("test")?.Value, out b) && b;
+                var env = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
+                var builder = new ConfigurationBuilder()
+                    .AddJsonFile($"appSettings.json", true, true)
+                    .AddJsonFile($"appSettings.{env}.json", true, true)
+                    .AddEnvironmentVariables()
+                    .AddCommandLine(args, new Dictionary<string, string>
+                    {
+                        ["-b"] = "basePath",
+                        ["--base"] = "basePath",
+                        ["--basePath"] = "basePath",
+                        ["-f"] = "importantArchiveFolders",
+                        ["--folders"] = "importantArchiveFolders",
+                        ["--importantFolders"] = "importantArchiveFolders",
+                        ["--importantArchiveFolders"] = "importantArchiveFolders",
+                        ["-d"] = "destinationPath",
+                        ["--destination"] = "destinationPath",
+                        ["--destinationPath"] = "destinationPath",
+                        ["-s"] = "sourceCodePath",
+                        ["--source"] = "sourceCodePath",
+                        ["--sourceCode"] = "sourceCodePath",
+                        ["--sourceCodePath"] = "sourceCodePath",
+                        ["-h"] = "browserHtmlPath",
+                        ["--html"] = "browserHtmlPath",
+                        ["--browserHtml"] = "browserHtmlPath",
+                        ["--browserHtmlPath"] = "browserHtmlPath",
+                        ["-imb"] = "importantArchiveDiscMB",
+                        ["--importantMB"] = "importantArchiveDiscMB",
+                        ["--importantDiscMB"] = "importantArchiveDiscMB",
+                        ["--importantArchiveDiscMB"] = "importantArchiveDiscMB",
+                        ["-rmb"] = "regularArchiveDiscMB",
+                        ["--regularMB"] = "regularArchiveDiscMB",
+                        ["--regularDiscMB"] = "regularArchiveDiscMB",
+                        ["--regularArchiveDiscMB"] = "regularArchiveDiscMB",
+                        ["-t"] = "test",
+                        ["--test"] = "test",
+                        ["-c"] = "copyOnly",
+                        ["--copy"] = "copyOnly",
+                        ["--copyOnly"] = "copyOnly"
+                    });
 
-            var folders = config.GetSection("importantArchiveFolders").Value?.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries) ?? new string[0];
-            if (folders.Length == 0)
-            {
-                _importantArchiveFolders = new string[0];
+                var config = builder.Build();
+
+                _basePath = Path.GetFullPath(config.GetSection("basePath")?.Value ?? throw new ArgumentNullException("basePath", "You must provide a basePath"));
+                _destinationPath = Path.GetFullPath(config.GetSection("destinationPath")?.Value ?? throw new ArgumentNullException("destinationPath", "You must provide a destinationPath"));
+                _sourceCodePath = Path.GetFullPath(config.GetSection("sourceCodePath")?.Value ?? throw new ArgumentNullException("sourceCodePath", "You must provide a sourceCodePath"));
+                _browserHtmlPath = Path.GetFullPath(config.GetSection("browserHtmlPath")?.Value ?? throw new ArgumentNullException("browserHtmlPath", "You must provide a browserHtmlPath"));
+
+                var folders = config.GetSection("importantArchiveFolders").Value?.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries) ?? new string[0];
+                if (folders.Length == 0)
+                {
+                    _importantArchiveFolders = new string[0];
+                }
+                else
+                {
+                    _importantArchiveFolders = folders.Select(x => Path.GetFullPath(Path.Combine(_basePath, x)).TrimEnd('\\')).ToArray();
+                }
+
+                _importantArchiveDiscMB = int.TryParse(config.GetSection("importantArchiveDiscMB")?.Value, out var v) ? v : 0;
+                if (_importantArchiveDiscMB <= 0) _importantArchiveDiscMB = 4000;
+
+                _regularArchiveDiscMB = int.TryParse(config.GetSection("regularArchiveDiscMB")?.Value, out v) ? v : 0;
+                if (_regularArchiveDiscMB <= 0) _regularArchiveDiscMB = 4000;
+
+                _copyOnly = bool.TryParse(config.GetSection("copyOnly")?.Value, out var b) && b;
+                _test = bool.TryParse(config.GetSection("test")?.Value, out b) && b;
+
+                return true;
             }
-            else
+            catch (Exception ex)
             {
-                _importantArchiveFolders = folders.Select(x => Path.GetFullPath(Path.Combine(_basePath, x)).TrimEnd('\\')).ToArray();
+                Console.Error.WriteLine(ex);
+                return false;
             }
         }
 

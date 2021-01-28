@@ -29,11 +29,13 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
       - run: npm ci
+        working-directory: src/archivebrowser
       - run: npm run build
+        working-directory: src/archivebrowser
 
       # Uploads the build artifact
       - name: Upload a Build Artifact
         uses: actions/upload-artifact@v2.2.2
         with:
           name: archiveBrowserHtml
-          path: dist/
+          path: src/archivebrowser/dist/

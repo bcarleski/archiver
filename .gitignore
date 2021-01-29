@@ -39,3 +39,5 @@ msbuild.wrn
 .archiverMetaData/
 node_modules/
 *.local
+
+/src/archivebrowser/public/Google Photos/

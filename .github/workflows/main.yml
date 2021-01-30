@@ -32,10 +32,21 @@ jobs:
         working-directory: src/archivebrowser
       - run: npm run build
         working-directory: src/archivebrowser
+      
+      # Runs dotnet publish
+      - name: Dotnet Publish
+        uses: actions/setup-dotnet@1.7.2
+      - run: dotnet publish -c Release -f netcoreapp3.1 -o ../../netCore -p:PublishReadyToRun=true -p:PublishSingleFile=true --self-contained true -r win-x64
+        working-directory: src/Archiver
 
-      # Uploads the build artifact
-      - name: Upload a Build Artifact
+      # Uploads the build artifacts
+      - name: Upload Browser HTML Artifact
         uses: actions/upload-artifact@v2.2.2
         with:
           name: archiveBrowserHtml
           path: src/archivebrowser/dist/
+      - name: Upload Archiver EXE Artifact
+        uses: actions/upload-artifact@v2.2.2
+        with:
+          name: archiverExe
+          path: netCore/

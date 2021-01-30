@@ -36,7 +36,7 @@ jobs:
       # Runs dotnet publish
       - name: Dotnet Publish
         uses: actions/setup-dotnet@v1.7.2
-      - run: dotnet publish -c Release -f netcoreapp3.1 -o ../../netCore -p:PublishReadyToRun=true -p:PublishSingleFile=true --self-contained true -r win-x64
+      - run: dotnet publish -p:PublishProfile=FolderProfile
         working-directory: src/Archiver
 
       # Uploads the build artifacts

@@ -15,6 +15,9 @@ namespace Archiver
     class Program
     {
         private const string _metaDataFolder = ".archiverMetaData";
+        private const string _defaultSourcePath = "https://github.com/bcarleski/archiver/archive/master.zip";
+        private const string _defaultBrowserHtmlPath = "https://nightly.link/bcarleski/archiver/workflows/main/master/archiveBrowserHtml.zip";
+        private const string _defaultImportantFolders = "Google Photos\\Photos for Extra Archiving";
 
         // CONFIGURATION ITEMS
         private static string _basePath;
@@ -24,12 +27,15 @@ namespace Archiver
         private static Uri _browserHtmlPath;
         private static long _importantArchiveDiscMB;
         private static long _regularArchiveDiscMB;
+        private static bool _skipImportantFiles;
+        private static bool _skipRegularFiles;
         private static bool _copyOnly;
         private static bool _test;
 
         static int Main(string[] args)
         {
             if (!LoadConfiguration(args)) return 1;
+            var tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
 
             try
             {
@@ -39,9 +45,10 @@ namespace Archiver
                 Log($"Found {files.Count} files");
                 var importantArchiveFiles = files.Where(x => _importantArchiveFolders.Any(y => x.PrincipalPath.StartsWith(y + '\\'))).ToList();
                 var regularArchiveFiles = files.Where(x => !_importantArchiveFolders.Any(y => x.PrincipalPath.StartsWith(y + '\\'))).ToList();
+                var extraFiles = FindExtraFiles(tempDir);
 
-                ProcessFiles("important", importantArchiveFiles, _importantArchiveDiscMB * 1000000L);
-                ProcessFiles("regular", regularArchiveFiles, _regularArchiveDiscMB * 1000000L);
+                if (importantArchiveFiles.Count > 0 && !_skipImportantFiles) ProcessFiles("important", importantArchiveFiles, _importantArchiveDiscMB * 1000000L, extraFiles);
+                if (regularArchiveFiles.Count > 0 && !_skipRegularFiles) ProcessFiles("regular", regularArchiveFiles, _regularArchiveDiscMB * 1000000L, extraFiles);
 
                 return 0;
             }
@@ -49,6 +56,13 @@ namespace Archiver
             {
                 Log("UNHANDLED EXCEPTION: " + ex.ToString());
                 return 2;
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    Directory.Delete(tempDir, true);
+                }
             }
         }
 
@@ -71,13 +85,15 @@ namespace Archiver
                     Console.WriteLine("    -d|--destination {DestinationPath}            The base destination folder");
                     Console.WriteLine();
                     Console.WriteLine("Optional Arguments:");
-                    Console.WriteLine("    -s|--source {SourceCodePath}                  The URL or path to the Archiver source code.  A URL must point to a ZIP file, whereas a local path can point to a folder or ZIP file.");
-                    Console.WriteLine("    -h|--html {BrowserHtmlPath}                   The URL or path to the Archiver Browser compiled HTML.  A URL must point to a ZIP file, whereas a local path can point to a folder or ZIP file.");
-                    Console.WriteLine("    -f|--folders {ImportantArchiveFolders}        A semi-colon separated list of relative paths within the base path which should be considered important");
+                    Console.WriteLine("    -s|--source {SourceCodePath}                  The URL or path to the Archiver source code.  A URL must point to a ZIP file, whereas a local path can point to a folder or ZIP file.  If not specified, defaults to the latest code from source control.");
+                    Console.WriteLine("    -h|--html {BrowserHtmlPath}                   The URL or path to the Archiver Browser compiled HTML.  A URL must point to a ZIP file, whereas a local path can point to a folder or ZIP file.  If not specified, defaults to the latest built HTML from source control.");
+                    Console.WriteLine("    -f|--folders {ImportantArchiveFolders}        A semi-colon separated list of relative paths within the base path which should be considered important.  If not specified, defaults to 'Google Photos\\Photos for Extra Archiving'");
                     Console.WriteLine("    -imb|--importantMB {ImportantArchiveDiscMB}   The size of disc, in megabytes, that will be used for the important files");
                     Console.WriteLine("    -rmb|--regularMB {RegularArchiveDiscMB}       The size of disc, in megabytes, that will be used for non-important files");
                     Console.WriteLine("    -c|--copy (true|false)                        If true, then files will be copied into the destination folder.  If false, they will be moved in.  Defaults to false.");
                     Console.WriteLine("    -t|--test (true|false)                        If true, files will not actually be copied/moved but the program will perform all other steps.  Defaults to false.");
+                    Console.WriteLine("    -si|--skipImportant (true|false)              If true, important files will not be processed.  Defaults to false.");
+                    Console.WriteLine("    -sr|--skipRegular (true|false)                If true, regular files will not be processed.  Defaults to false.");
 
                     return false;
                 }
@@ -119,25 +135,29 @@ namespace Archiver
                         ["--test"] = "test",
                         ["-c"] = "copyOnly",
                         ["--copy"] = "copyOnly",
-                        ["--copyOnly"] = "copyOnly"
+                        ["--copyOnly"] = "copyOnly",
+                        ["-si"] = "skipImportantFiles",
+                        ["--skipImportant"] = "skipImportantFiles",
+                        ["--skipImportantFiles"] = "skipImportantFiles",
+                        ["-sr"] = "skipRegularFiles",
+                        ["--skipRegular"] = "skipRegularFiles",
+                        ["--skipRegularFiles"] = "skipRegularFiles"
                     });
 
                 var config = builder.Build();
 
                 _basePath = Path.GetFullPath(config.GetSection("basePath")?.Value ?? throw new ArgumentNullException("basePath", "You must provide a basePath"));
                 _destinationPath = Path.GetFullPath(config.GetSection("destinationPath")?.Value ?? throw new ArgumentNullException("destinationPath", "You must provide a destinationPath"));
-                _sourceCodePath = Uri.TryCreate(config.GetSection("sourceCodePath")?.Value, UriKind.Absolute, out var u) ? u : null;
-                _browserHtmlPath = Uri.TryCreate(config.GetSection("browserHtmlPath")?.Value, UriKind.Absolute, out u) ? u : null;
 
-                var folders = config.GetSection("importantArchiveFolders").Value?.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries) ?? new string[0];
-                if (folders.Length == 0)
-                {
-                    _importantArchiveFolders = new string[0];
-                }
-                else
-                {
-                    _importantArchiveFolders = folders.Select(x => Path.GetFullPath(Path.Combine(_basePath, x)).TrimEnd('\\')).ToArray();
-                }
+                var path = config.GetSection("sourceCodePath")?.Value;
+                _sourceCodePath = path == "-" ? null : (Uri.TryCreate(path, UriKind.Absolute, out var u) ? u : new Uri(_defaultSourcePath));
+
+                path = config.GetSection("browserHtmlPath")?.Value;
+                _browserHtmlPath = path == "-" ? null : (Uri.TryCreate(path, UriKind.Absolute, out u) ? u : new Uri(_defaultBrowserHtmlPath));
+
+                path = config.GetSection("importantArchiveFolders")?.Value;
+                var folders = path == "-" ? new string[0] : (path ?? _defaultImportantFolders).Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
+                _importantArchiveFolders = folders.Select(x => Path.GetFullPath(Path.Combine(_basePath, x)).TrimEnd('\\')).ToArray();
 
                 _importantArchiveDiscMB = int.TryParse(config.GetSection("importantArchiveDiscMB")?.Value, out var v) ? v : 0;
                 if (_importantArchiveDiscMB <= 0) _importantArchiveDiscMB = 4000;
@@ -147,6 +167,8 @@ namespace Archiver
 
                 _copyOnly = bool.TryParse(config.GetSection("copyOnly")?.Value, out var b) && b;
                 _test = bool.TryParse(config.GetSection("test")?.Value, out b) && b;
+                _skipImportantFiles = bool.TryParse(config.GetSection("skipImportantFiles")?.Value, out b) && b;
+                _skipRegularFiles = bool.TryParse(config.GetSection("skipRegularFiles")?.Value, out b) && b;
 
                 return true;
             }
@@ -271,7 +293,7 @@ namespace Archiver
             }
         }
 
-        private static void ProcessFiles(string type, List<FileData> files, long maxDiscSizeInBytes)
+        private static void ProcessFiles(string type, List<FileData> files, long maxDiscSizeInBytes, List<FileData> extraFiles)
         {
             var tempDir = Path.GetTempFileName();
             if (File.Exists(tempDir)) File.Delete(tempDir);
@@ -283,7 +305,6 @@ namespace Archiver
                     DeDuplicateFiles(files);
 
                     Log($"Processing {files.Count} unique {type} archive files");
-                    var extraFiles = FindExtraFiles(tempDir);
                     var metaDataLength = DetermineMetaDataLength(files);
                     var discs = SplitIntoDiscs(Path.Combine(_destinationPath, $"{type}Archive"), files, extraFiles.Sum(x => x.Size) + metaDataLength, maxDiscSizeInBytes).ToList();
                     var metaData = GenerateMetaData(discs, tempDir);

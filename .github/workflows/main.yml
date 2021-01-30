@@ -49,4 +49,4 @@ jobs:
         uses: actions/upload-artifact@v2.2.2
         with:
           name: archiverExe
-          path: netCore/
+          path: src/Archiver/bin/Release/netcoreapp3.1/publish/

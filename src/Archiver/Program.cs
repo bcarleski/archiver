@@ -1,6 +1,7 @@
 ﻿using Microsoft.Extensions.Configuration;
 using Newtonsoft.Json;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
@@ -304,7 +305,7 @@ namespace Archiver
                 {
                     DeDuplicateFiles(files);
 
-                    Log($"Processing {files.Count} unique {type} archive files");
+                    Log($"Processing {files.Sum(x => x.Paths.Count())} unique {type} archive files");
                     var metaDataLength = DetermineMetaDataLength(files);
                     var discs = SplitIntoDiscs(Path.Combine(_destinationPath, $"{type}Archive"), files, extraFiles.Sum(x => x.Size) + metaDataLength, maxDiscSizeInBytes).ToList();
                     var metaData = GenerateMetaData(discs, tempDir);
@@ -316,8 +317,6 @@ namespace Archiver
                         AddFilesToDiscFolder(disc, extraFiles.Concat(new[] { metaData }), false);
                         WriteDiscMetaData(disc);
 
-                        var action = _copyOnly ? "Copy" : "Mov";
-                        Log($"        {action}ing {disc.Files.Count} content files");
                         AddFilesToDiscFolder(disc, disc.Files, !_copyOnly);
                     }
                 });
@@ -462,6 +461,8 @@ namespace Archiver
                     json.WriteValue("People");
                     json.WritePropertyName("c");
                     json.WriteValue("Archival Disc Number");
+                    json.WritePropertyName("h");
+                    json.WriteValue("SHA1 Hash");
                     json.WriteEndObject();
                     json.WritePropertyName("files");
                     json.WriteStartArray();
@@ -509,6 +510,8 @@ namespace Archiver
 
                         json.WritePropertyName("c");
                         json.WriteValue(discFile.Disc.DiscNumber);
+                        json.WritePropertyName("h");
+                        json.WriteValue(discFile.File.Hash);
                         json.WriteEndObject();
                     }
 
@@ -546,23 +549,62 @@ namespace Archiver
         {
             if (_test)
             {
-                if (moveFiles) Log("            Not moving because we are in test mode");
-                else Log("            Not copying because we are in test mode");
+                if (moveFiles) Log("        Not moving because we are in test mode");
+                else Log("        Not copying because we are in test mode");
                 return;
             }
 
-            foreach (var file in files)
+            var allFiles = files.SelectMany(x => x.Paths.Select(y => (Source: y.Full, Dest: Path.Combine(disc.Path, y.Relative)))).ToList();
+            var folders = allFiles.Select(x => Path.GetDirectoryName(x.Dest)).Distinct().ToList();
+
+            Log($"        Ensuring {folders.Count} folders are created");
+            foreach (var folder in folders)
             {
-                foreach (var path in file.Paths)
+                CreateAndUseDirectory(folder, () =>
                 {
-                    var dest = Path.Combine(disc.Path, path.Relative);
-                    CreateAndUseDirectory(Path.GetDirectoryName(dest), () =>
-                    {
-                        if (moveFiles) File.Move(path.Full, dest, true);
-                        else File.Copy(path.Full, dest, true);
-                    });
-                }
+                    var testPath = Path.Combine(folder, "test.txt");
+                    File.WriteAllText(testPath, "Test");
+                    File.Delete(testPath);
+                });
             }
+
+            var action = _copyOnly ? "Copy" : "Mov";
+            Log($"        {action}ing {allFiles.Count} content files using {Environment.ProcessorCount} threads");
+
+            var queue = new ConcurrentQueue<(string Source, string Destination)>(allFiles);
+            var threads = new Thread[Environment.ProcessorCount];
+            var finisher = new CountdownEvent(threads.Length);
+            var errors = new List<Exception>(Environment.ProcessorCount);
+
+            for (var i = 0; i < threads.Length; i++)
+            {
+                threads[i] = new Thread(() =>
+                {
+                    try
+                    {
+                        while (queue.TryDequeue(out var entry))
+                        {
+                            if (!File.Exists(entry.Source)) continue;
+
+                            if (moveFiles) File.Move(entry.Source, entry.Destination, true);
+                            else File.Copy(entry.Source, entry.Destination, true);
+                        }
+                    }
+                    catch (Exception e)
+                    {
+                        errors.Add(e);
+                    }
+                    finally
+                    {
+                        finisher.Signal();
+                    }
+                });
+                threads[i].Start();
+            }
+
+            finisher.Wait();
+
+            if (errors.Count > 0) throw new AggregateException(errors.ToArray());
         }
     }
 }
